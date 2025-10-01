@@ -18,7 +18,7 @@ import ReactFlow, {
   ReactFlowInstance,
 } from 'react-flow-renderer';
 import { User } from 'firebase/auth';
-import { doc, setDoc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/app/firebase/config';
 import { Save, Trash2, Palette, Focus, Filter, Tag, X } from 'lucide-react';
 import CustomNode from './CustomNode';
@@ -76,16 +76,19 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
     const defaultEdgeOptions = {
         style: { strokeWidth: 2 },
         markerEnd: { type: MarkerType.ArrowClosed },
+        labelStyle: { fill: '#ffffff', fontWeight: 500 },
+        labelBgStyle: { fill: '#1f2937', fillOpacity: 0.9 },
+        labelBgPadding: [8, 4] as [number, number],
+        labelBgBorderRadius: 4,
     };
     
     // --- DATA PERSISTENCE (FIREBASE) ---
-    // 🔧 FIX: Load data from Firebase (ป้องกัน overwrite)
+    // Load data from Firebase
     useEffect(() => {
       if (!user || !planId) { setIsLoading(false); return; }
       setIsLoading(true);
       const planRef = doc(db, 'users', user.uid, 'plans', planId);
       const unsubscribe = onSnapshot(planRef, (docSnap) => {
-          // ถ้ากำลังแก้ไขอยู่ local ให้ข้าม update จาก Firebase
           if (isLocalUpdateRef.current || pendingSaveRef.current) {
               return;
           }
@@ -105,6 +108,10 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
     // 🔧 FIX: Auto-save data to Firebase (ป้องกัน race condition)
     useEffect(() => {
         if (isLoading) return;
+
+        // 🔧 FIX: ถ้า state update ไม่ได้มาจากการกระทำของผู้ใช้ (local) ไม่ต้อง save
+        if (!isLocalUpdateRef.current) return;
+
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
         
         pendingSaveRef.current = true;
@@ -131,14 +138,24 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
 
             try {
                 const planRef = doc(db, 'users', user.uid, 'plans', planId);
-                await setDoc(planRef, { nodes: nodesToSave, edges, availableTags }, { merge: true });
+                // 🔧 FIX: รวมการบันทึก viewport ไว้ที่นี่เพื่อความเสถียร
+                const currentViewport = reactFlowInstance.current?.getViewport();
+                await setDoc(planRef, { 
+                    nodes: nodesToSave, 
+                    edges, 
+                    availableTags,
+                    viewport: currentViewport || null
+                }, { merge: true });
+
             } catch (err) {
                 console.error("Error saving data:", err);
             } finally {
                 setIsSaving(false);
                 pendingSaveRef.current = false;
+                // 🔧 FIX: รีเซ็ต Flag ที่นี่ หลังจาก Save เสร็จแล้วเท่านั้น
+                isLocalUpdateRef.current = false;
             }
-        }, 1500); // เพิ่มเวลา debounce จาก 2000 -> 1500
+        }, 1500);
 
         return () => { 
             if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); 
@@ -189,7 +206,6 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
     }, [edges, filteredNodes]);
 
     // --- EVENT HANDLERS & CALLBACKS ---
-    // 🔧 FIX: ป้องกัน Firebase overwrite ขณะแก้ไข
     const onNodesChange: OnNodesChange = useCallback((changes) => {
         isLocalUpdateRef.current = true;
         setNodes((nds) => {
@@ -197,7 +213,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             setSelectedNode(nextNodes.find(n => n.selected) || null);
             return nextNodes;
         });
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const onEdgesChange: OnEdgesChange = useCallback((changes) => {
@@ -207,26 +223,20 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             setHasSelectedEdge(nextEdges.some(e => e.selected));
             return nextEdges;
         });
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const onConnect: OnConnect = useCallback((connection) => {
         isLocalUpdateRef.current = true;
         setEdges((eds) => addEdge(connection, eds));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
     
+    // โค้ดส่วน onMoveEnd จะถูกจัดการโดย Auto-save effect หลักแล้ว แต่เก็บฟังก์ชันไว้ตามเดิม
     const onMoveEnd = useCallback((_event: MouseEvent | TouchEvent, vp: Viewport) => {
-        if (viewportTimeoutRef.current) clearTimeout(viewportTimeoutRef.current);
-        viewportTimeoutRef.current = setTimeout(() => {
-            if(user && planId) {
-                const planRef = doc(db, 'users', user.uid, 'plans', planId);
-                updateDoc(planRef, { viewport: vp });
-            }
-        }, 1000);
+        isLocalUpdateRef.current = true; // แค่ตั้ง flag ให้ auto-save ทำงาน
     }, [user, planId]);
 
-    // 🔧 FIX: Add Node with proper positioning
     const onAddNode = useCallback((type: 'default' | 'checklist') => {
         isLocalUpdateRef.current = true;
         
@@ -234,7 +244,6 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             ? { type: 'checklist', title: 'My To-do List', items: [{id: getNextId(), text: 'First item', completed: false}], width: 250, height: 120, tags: [] } 
             : { type: 'default', label: 'New Node', width: 150, height: 50, tags: [] };
         
-        // คำนวนตำแหน่งกลางหน้าจอปัจจุบัน
         const centerX = reactFlowInstance.current 
             ? (window.innerWidth / 2 - reactFlowInstance.current.getViewport().x) / reactFlowInstance.current.getViewport().zoom 
             : 250;
@@ -253,40 +262,39 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
         };
         
         setNodes((nds) => [...nds, newNode]);
-        
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
     
     const onDeleteNode = useCallback((nodeId: string) => {
         isLocalUpdateRef.current = true;
         setNodes((nds) => nds.filter((node) => node.id !== nodeId));
         setEdges((eds) => eds.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const handleNodeLabelChange = useCallback((nodeId: string, newText: string) => {
         isLocalUpdateRef.current = true;
         setNodes((nds) => nds.map((node) => {
             if (node.id === nodeId) {
-              const keyToUpdate = node.data.type === 'checklist' ? 'title' : 'label';
-              return { ...node, data: { ...node.data, [keyToUpdate]: newText } };
+                const keyToUpdate = node.data.type === 'checklist' ? 'title' : 'label';
+                return { ...node, data: { ...node.data, [keyToUpdate]: newText } };
             }
             return node;
         }));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const handleNodeResize = useCallback((nodeId: string, newSize: { width: number; height: number }) => {
         isLocalUpdateRef.current = true;
         setNodes((nds) => nds.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, width: newSize.width, height: newSize.height } } : node));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
     
     const handleNodeColorChange = (color: string) => {
         if (!selectedNode) return;
         isLocalUpdateRef.current = true;
         setNodes((nds) => nds.map((node) => node.id === selectedNode.id ? { ...node, data: { ...node.data, color } } : node));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     };
 
     // Checklist Item Actions
@@ -299,7 +307,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             }
             return node;
         }));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const handleItemUpdate = useCallback((nodeId: string, itemId: string, newText: string) => {
@@ -311,7 +319,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             }
             return node;
         }));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const handleItemDelete = useCallback((nodeId: string, itemId: string) => {
@@ -323,7 +331,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             }
             return node;
         }));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
     
     const handleAddItem = useCallback((nodeId: string, newItemText: string) => {
@@ -336,13 +344,15 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             }
             return node;
         }));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     // Tag Actions
     const handleAddTag = () => {
         const trimmedTag = newTag.trim();
         if (trimmedTag && !availableTags.includes(trimmedTag)) {
+            // การแก้ไข availableTags จะ trigger useEffect หลักให้ save อัตโนมัติ
+            isLocalUpdateRef.current = true;
             setAvailableTags([...availableTags, trimmedTag]);
             setNewTag('');
         }
@@ -358,7 +368,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
             }
             return node;
         }));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const handleToggleTagFilter = (tag: string) => {
@@ -366,12 +376,9 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
     };
 
     const handleDeleteTag = (tagToDelete: string) => {
-        // ลบ tag ออกจาก availableTags
-        setAvailableTags(prev => prev.filter(t => t !== tagToDelete));
-        // ลบ tag ออกจาก selectedTags ถ้ามี
-        setSelectedTags(prev => prev.filter(t => t !== tagToDelete));
-        // ลบ tag ออกจาก nodes ทั้งหมด
         isLocalUpdateRef.current = true;
+        setAvailableTags(prev => prev.filter(t => t !== tagToDelete));
+        setSelectedTags(prev => prev.filter(t => t !== tagToDelete));
         setNodes((nds) => nds.map((node) => ({
             ...node,
             data: {
@@ -379,7 +386,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
                 tags: (node.data.tags || []).filter((t: string) => t !== tagToDelete)
             }
         })));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     };
 
     const getTagUsageCount = (tag: string) => {
@@ -408,7 +415,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
     const handleDeleteSelectedEdges = useCallback(() => {
         isLocalUpdateRef.current = true;
         setEdges((eds) => eds.filter(edge => !edge.selected));
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     }, []);
 
     const handleSaveEdgeLabel = () => {
@@ -416,12 +423,19 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
         isLocalUpdateRef.current = true;
         setEdges((eds) => eds.map((edge) =>
             edge.id === editingEdge.id
-                ? { ...edge, label: edgeLabel, labelStyle: { fill: '#fff', fontSize: 12 } }
+                ? { 
+                    ...edge, 
+                    label: edgeLabel,
+                    labelStyle: { fill: '#ffffff', fontWeight: 500 },
+                    labelBgStyle: { fill: '#1f2937', fillOpacity: 0.9 },
+                    labelBgPadding: [8, 4] as [number, number],
+                    labelBgBorderRadius: 4
+                  }
                 : edge
         ));
         setShowEdgeLabelModal(false);
         setEditingEdge(null);
-        setTimeout(() => { isLocalUpdateRef.current = false; }, 100);
+        // 🔧 FIX: ลบ setTimeout ออก
     };
 
     // --- NODE TYPES ---
@@ -446,11 +460,13 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
     return (
         <div className="h-full w-full bg-gray-900 relative">
              <style>{`
-                .react-flow__edge-path { stroke-width: 2; cursor: pointer; }
-                .react-flow__edge-path:hover { stroke-width: 3; }
-                .react-flow__edge.selected .react-flow__edge-path { stroke: #60a5fa; stroke-width: 3; }
-                .react-flow__edge-interaction { stroke-width: 20 !important; stroke: transparent; }
-            `}</style>
+                 .react-flow__edge-path { stroke-width: 2; cursor: pointer; }
+                 .react-flow__edge-path:hover { stroke-width: 3; }
+                 .react-flow__edge.selected .react-flow__edge-path { stroke: #60a5fa; stroke-width: 3; }
+                 .react-flow__edge-interaction { stroke-width: 20 !important; stroke: transparent; }
+                 .react-flow__edge-text { fill: #ffffff; font-size: 12px; font-weight: 500; }
+                 .react-flow__edge-textbg { fill: #1f2937; fill-opacity: 0.9; rx: 4; }
+             `}</style>
             
             {/* UI Overlays */}
             <div className="absolute top-4 right-4 z-10 flex items-center space-x-2">
@@ -542,7 +558,7 @@ export default function MindMapCanvas({ user, planId }: MindMapCanvasProps) {
                 onMoveEnd={onMoveEnd}
                 defaultEdgeOptions={defaultEdgeOptions}
                 connectionLineStyle={{ stroke: '#fff', strokeWidth: 2 }}
-                fitView={nodes.length === 0}
+                fitView={nodes.length < 2 && !viewport} // fitView on initial load only
                 fitViewOptions={{ padding: 0.2 }}
             >
                 <Controls />
