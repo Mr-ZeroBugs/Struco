@@ -70,7 +70,7 @@ export default function Dashboard({ user }: DashboardProps) {
 
   return (
     <div className="p-8 text-white h-full overflow-y-auto">
-      <h1 className="text-3xl font-bold mb-6">My Life Maps</h1>
+      <h1 className="text-3xl font-bold mb-6">My Life Strucs</h1>
       
       <form onSubmit={handleCreatePlan} className="mb-8 flex gap-4">
         <input

@@ -30,7 +30,7 @@ export default function Sidebar({ user, onLogin, isOpen, setIsOpen }: SidebarPro
                    }`}
       >
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <span className="text-2xl font-bold">LifeMap AI</span>
+          <span className="text-2xl font-bold">Struco</span>
           <button onClick={() => setIsOpen(false)} className="md:hidden">
             <X size={24} />
           </button>

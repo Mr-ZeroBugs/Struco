@@ -2,9 +2,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Handle, Position, NodeProps } from 'react-flow-renderer';
-import { Trash2, Plus } from 'lucide-react';
+import { Trash2, Plus, Tag } from 'lucide-react';
 
-// Types (ไม่มีการเปลี่ยนแปลง)
+// --- TYPE DEFINITIONS ---
 type ChecklistItemType = {
   id: string;
   text: string;
@@ -19,6 +19,7 @@ type NodeData = {
   items?: ChecklistItemType[];
   width?: number;
   height?: number;
+  tags?: string[];
   onDelete: (id: string) => void;
   onLabelChange: (id: string, newText: string) => void;
   onResize: (id: string, newSize: { width: number; height: number }) => void;
@@ -26,9 +27,12 @@ type NodeData = {
   onItemToggle?: (nodeId: string, itemId: string) => void;
   onAddItem?: (nodeId: string, newItemText: string) => void;
   onItemDelete?: (nodeId: string, itemId: string) => void;
+  onToggleTag?: (nodeId: string, tag: string) => void;
+  availableTags?: string[];
 };
 
-// Sub-component for individual checklist items
+// --- SUB-COMPONENTS ---
+
 function ChecklistItem({ item, nodeId, data }: { item: ChecklistItemType, nodeId: string, data: NodeData }) {
   const [isEditing, setIsEditing] = useState(false);
   const [text, setText] = useState(item.text);
@@ -57,7 +61,6 @@ function ChecklistItem({ item, nodeId, data }: { item: ChecklistItemType, nodeId
   );
 }
 
-// Sub-component for Default Node content
 function DefaultNodeContent({ data, id }: { data: NodeData, id: string }) {
   const [isEditing, setIsEditing] = useState(false);
   const [text, setText] = useState(data.label);
@@ -72,7 +75,14 @@ function DefaultNodeContent({ data, id }: { data: NodeData, id: string }) {
   return (
     <div className="drag-handle w-full h-full flex items-center justify-center p-3 cursor-move" onDoubleClick={() => setIsEditing(true)}>
       {isEditing ? (
-        <input type="text" value={text} onChange={(e) => setText(e.target.value)} onBlur={handleUpdate} onKeyDown={(e) => e.key === 'Enter' && handleUpdate()} className="nodrag bg-gray-600 text-white text-center w-full outline-none rounded cursor-text"/>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={handleUpdate}
+          onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) handleUpdate() } }
+          className="nodrag bg-gray-600 text-white text-center w-full h-full outline-none rounded cursor-text resize-none"
+          autoFocus
+        />
       ) : (
         <div className="text-white text-center px-2 break-words">{data.label}</div>
       )}
@@ -80,7 +90,6 @@ function DefaultNodeContent({ data, id }: { data: NodeData, id: string }) {
   );
 }
 
-// Sub-component for Checklist Node content
 function ChecklistNodeContent({ data, id }: { data: NodeData, id: string }) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
@@ -99,6 +108,8 @@ function ChecklistNodeContent({ data, id }: { data: NodeData, id: string }) {
         data.onAddItem(id, newItemText.trim());
         setNewItemText('');
         setIsAdding(false);
+    } else {
+        setIsAdding(false);
     }
   };
 
@@ -112,9 +123,7 @@ function ChecklistNodeContent({ data, id }: { data: NodeData, id: string }) {
         )}
       </div>
       <div className="p-3 space-y-2 flex-1 overflow-y-auto">
-        {data.items?.map(item => (
-          <ChecklistItem key={item.id} item={item} nodeId={id} data={data} />
-        ))}
+        {data.items?.map(item => <ChecklistItem key={item.id} item={item} nodeId={id} data={data} />)}
         {isAdding ? (
            <div className="flex items-center gap-2">
               <input type="checkbox" disabled className="form-checkbox h-4 w-4 bg-gray-700 border-gray-600"/>
@@ -130,12 +139,14 @@ function ChecklistNodeContent({ data, id }: { data: NodeData, id: string }) {
   );
 }
 
-// Main Custom Node Component
+
+// --- MAIN CUSTOM NODE COMPONENT ---
 export default function CustomNode({ id, data, selected }: NodeProps<NodeData>) {
   const nodeRef = useRef<HTMLDivElement>(null);
+  const [showTagMenu, setShowTagMenu] = useState(false);
 
-  const nodeColor = data.color || (data.type === 'checklist' ? '#3730a3' : '#374151');
-  const selectedBorderColor = data.type === 'checklist' ? 'border-indigo-500' : 'border-blue-500';
+  const nodeColor = data.color || (data.type === 'checklist' ? '#4338ca' : '#374151');
+  const selectedBorderColor = 'border-blue-500';
   const width = data.width || (data.type === 'checklist' ? 250 : 150);
   const height = data.height || (data.type === 'checklist' ? 100 : 50);
 
@@ -150,10 +161,9 @@ export default function CustomNode({ id, data, selected }: NodeProps<NodeData>) 
 
     const doResize = (moveEvent: MouseEvent) => {
       const newWidth = Math.max(150, startWidth + moveEvent.clientX - startX);
-      const newHeight = Math.max(50, startHeight + moveEvent.clientY - startY);
+      const newHeight = Math.max(data.type === 'checklist' ? 120 : 50, startHeight + moveEvent.clientY - startY);
       if (nodeRef.current) {
         nodeRef.current.style.width = `${newWidth}px`;
-        // 👇 **จุดที่แก้ไข:** เปลี่ยน newWidth เป็น newHeight
         nodeRef.current.style.height = `${newHeight}px`;
       }
     };
@@ -174,33 +184,58 @@ export default function CustomNode({ id, data, selected }: NodeProps<NodeData>) 
   };
 
   return (
-    <div
-      ref={nodeRef}
-      style={{ width: `${width}px`, height: `${height}px` }}
-      className="relative"
-    >
+    <div ref={nodeRef} style={{ width: `${width}px`, height: `${height}px` }} className="relative group/node">
       <div 
-        className={`w-full h-full border-2 rounded-lg shadow-md ${selected ? selectedBorderColor : 'border-gray-600'} flex flex-col overflow-hidden`}
+        className={`w-full h-full border-2 rounded-lg shadow-md ${selected ? selectedBorderColor : 'border-transparent'} flex flex-col overflow-hidden transition-colors`}
         style={{ backgroundColor: nodeColor }}
       >
-        {data.type === 'checklist' ? (
-          <ChecklistNodeContent data={data} id={id} />
-        ) : (
-          <DefaultNodeContent data={data} id={id} />
-        )}
+        {data.type === 'checklist' ? <ChecklistNodeContent data={data} id={id} /> : <DefaultNodeContent data={data} id={id} />}
       </div>
 
-      <Handle type="target" position={Position.Top} className="!bg-gray-500 z-10" />
-      <Handle type="source" position={Position.Bottom} className="!bg-gray-500 z-10" />
+      <Handle type="target" position={Position.Top} className="!bg-gray-500 !w-3 !h-3 z-10" />
+      <Handle type="source" position={Position.Bottom} className="!bg-gray-500 !w-3 !h-3 z-10" />
       
-      {selected && (
-        <button onClick={() => data.onDelete(id)} className="absolute -top-2 -right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1 z-20"><Trash2 size={12} /></button>
+      {/* Node Actions (Delete, Tag) */}
+      <div className={`absolute -top-3 -right-3 flex gap-1 z-20 transition-opacity opacity-0 ${selected ? '!opacity-100' : 'group-hover/node:opacity-100'}`}>
+          <button onClick={() => setShowTagMenu(!showTagMenu)} className="bg-blue-600 hover:bg-blue-700 text-white rounded-full p-1.5" title="Manage tags"><Tag size={12} /></button>
+          <button onClick={() => data.onDelete(id)} className="bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5"><Trash2 size={12} /></button>
+      </div>
+      
+      {/* Tag Menu Popup */}
+      {showTagMenu && (
+        <div className="absolute top-8 left-0 bg-gray-800 rounded-lg shadow-xl p-2 min-w-[150px] z-30 nodrag">
+          <div className="max-h-48 overflow-y-auto space-y-1">
+            {(data.availableTags || []).map(tag => (
+              <button
+                key={tag}
+                onClick={() => data.onToggleTag?.(id, tag) }
+                className={`w-full text-left px-3 py-1.5 rounded text-sm transition ${(data.tags || []).includes(tag) ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
+      {/* Display Assigned Tags */}
+      {(data.tags || []).length > 0 && (
+        <div className="absolute -bottom-7 left-0 right-0 flex flex-wrap gap-1 justify-center px-2 nodrag">
+          {(data.tags || []).map(tag => (
+            <span key={tag} className="px-2 py-0.5 bg-gray-600/90 text-white text-xs rounded-full">
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Resize Handle */}
       <div
         onMouseDown={onResizeStart}
-        className="absolute bottom-0 right-0 w-4 h-4 bg-gray-500/50 hover:bg-gray-400 cursor-se-resize rounded-br-lg z-20 nodrag"
-      />
+        className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize rounded-br-lg z-20 nodrag opacity-0 group-hover/node:opacity-100"
+      >
+        <div className="w-full h-full bg-gray-500/50 hover:bg-gray-400 rounded-br-lg" />
+      </div>
     </div>
   );
 }
